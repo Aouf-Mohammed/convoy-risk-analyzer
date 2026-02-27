@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from db.database import supabase
 
 app = FastAPI()
 
@@ -9,3 +10,8 @@ def health_check():
 @app.get("/")
 def default_check():
     return {"message": "Welcome to Convoy Risk Analyzer"}
+
+@app.get("/db-test")
+def db_test():
+    response = supabase.table("users").select("*").execute()
+    return {"connected": True, "data": response.data}
