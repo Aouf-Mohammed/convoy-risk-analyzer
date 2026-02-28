@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:dio/dio.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'dart:convert';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -20,12 +21,53 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = false;
   String? _error;
   List<dynamic> _routes = [];
+  String? _liveUpdate; // Shows real-time WebSocket message
 
-  final channel = WebSocketChannel.connect(
-    Uri.parse('wss://your-railway-url.up.railway.app/ws/risk-updates'),
-  );
-  // Colors from safest (green) to riskiest (red)
+  late WebSocketChannel _channel;
   final List<Color> _routeColors = [Colors.green, Colors.orange, Colors.red];
+
+  @override
+  void initState() {
+    super.initState();
+    _connectWebSocket();
+  }
+
+  void _connectWebSocket() {
+    try {
+      _channel = WebSocketChannel.connect(
+        Uri.parse(
+          'wss://convoy-risk-analyzer-production.up.railway.app/ws/risk-updates',
+        ),
+      );
+      _channel.stream.listen(
+        (message) {
+          final data = jsonDecode(message);
+          if (data['type'] == 'route_computed') {
+            setState(() {
+              _liveUpdate =
+                  '🛰 Route ${data['route_id'] + 1} computed — Safety: ${data['safety']} · ${data['distance_km']} km';
+            });
+            // Clear banner after 3 seconds
+            Future.delayed(const Duration(seconds: 3), () {
+              if (mounted) setState(() => _liveUpdate = null);
+            });
+          }
+        },
+        onError: (e) => debugPrint('WebSocket error: $e'),
+        onDone: () => debugPrint('WebSocket closed'),
+      );
+    } catch (e) {
+      debugPrint('WebSocket connection failed: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _channel.sink.close();
+    _startController.dispose();
+    _endController.dispose();
+    super.dispose();
+  }
 
   Future<void> _analyzeRoute() async {
     final startParts = _startController.text.trim().split(',');
@@ -40,6 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _loading = true;
       _error = null;
       _routes = [];
+      _liveUpdate = null;
     });
 
     try {
@@ -52,17 +95,13 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       );
       final routes = response.data['routes'] as List;
-
-      // Sort by safety descending (safest first)
       routes.sort(
         (a, b) => (b['safety_probability'] as num).compareTo(
           a['safety_probability'] as num,
         ),
       );
-
       setState(() => _routes = routes);
 
-      // Zoom map to fit the route
       if (routes.isNotEmpty) {
         final firstPath = routes[0]['path'] as List;
         final points = firstPath
@@ -81,29 +120,22 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<Polyline> _buildPolylines() {
     List<Polyline> polylines = [];
-
     for (int i = 0; i < _routes.length; i++) {
       final segments = _routes[i]['segments'] as List?;
       if (segments == null || segments.isEmpty) continue;
-
-      // Group consecutive segments of same color into one polyline
       List<LatLng> currentPoints = [];
       Color? currentColor;
-
       for (final segment in segments) {
         final risk = (segment['risk'] as num).toDouble();
         final start = segment['start'] as List;
         final end = segment['end'] as List;
-
         Color color = risk < 0.2
             ? Colors.green
             : risk < 0.5
             ? Colors.orange
             : Colors.red;
         if (i > 0) color = color.withOpacity(0.4);
-
         if (currentColor == null || color.value != currentColor.value) {
-          // Flush current group
           if (currentPoints.length >= 2) {
             polylines.add(
               Polyline(
@@ -118,8 +150,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         currentPoints.add(LatLng(end[0].toDouble(), end[1].toDouble()));
       }
-
-      // Flush last group
       if (currentPoints.length >= 2) {
         polylines.add(
           Polyline(
@@ -130,7 +160,6 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       }
     }
-
     return polylines;
   }
 
@@ -138,7 +167,6 @@ class _HomeScreenState extends State<HomeScreen> {
     List<Marker> markers = [];
     final startParts = _startController.text.trim().split(',');
     final endParts = _endController.text.trim().split(',');
-
     if (startParts.length == 2) {
       try {
         markers.add(
@@ -171,7 +199,6 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(title: const Text("Convoy Risk Analyzer")),
       body: Stack(
         children: [
-          // Layer 1: Map with polylines and markers
           FlutterMap(
             mapController: _mapController,
             options: const MapOptions(
@@ -185,14 +212,37 @@ class _HomeScreenState extends State<HomeScreen> {
                 userAgentPackageName: 'com.convoy.risk',
                 retinaMode: true,
               ),
-
               if (_routes.isNotEmpty)
                 PolylineLayer(polylines: _buildPolylines()),
               if (_routes.isNotEmpty) MarkerLayer(markers: _buildMarkers()),
             ],
           ),
 
-          // Layer 2: Input Panel
+          // Live WebSocket update banner
+          if (_liveUpdate != null)
+            Positioned(
+              top: 16,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.indigo.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: Text(
+                    _liveUpdate!,
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                ),
+              ),
+            ),
+
+          // Input Panel
           Positioned(
             top: 16,
             left: 16,
