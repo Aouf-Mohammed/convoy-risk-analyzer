@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:dio/dio.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -20,6 +21,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _error;
   List<dynamic> _routes = [];
 
+  final channel = WebSocketChannel.connect(
+    Uri.parse('wss://your-railway-url.up.railway.app/ws/risk-updates'),
+  );
   // Colors from safest (green) to riskiest (red)
   final List<Color> _routeColors = [Colors.green, Colors.orange, Colors.red];
 
@@ -40,7 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final response = await _dio.post(
-        'http://127.0.0.1:8000/route/plan',
+        'https://convoy-risk-analyzer-production.up.railway.app/route/plan',
         data: {
           "origin": [double.parse(startParts[0]), double.parse(startParts[1])],
           "destination": [double.parse(endParts[0]), double.parse(endParts[1])],

@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from db.database import supabase
 from models.route_models import RouteRequest
@@ -6,6 +6,7 @@ from services.route_engine import build_graph, find_k_safest_routes, calculate_r
 import requests as http_requests
 import sqlite3
 import random
+from typing import List
 
 app = FastAPI()
 
@@ -17,6 +18,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- WebSocket Connection Manager ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            await connection.send_json(message)
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/risk-updates")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            await manager.broadcast({
+                "type": "risk_update",
+                "route_id": data.get("route_id"),
+                "risk_score": data.get("risk_score"),
+                "message": f"Route {data.get('route_id')} risk updated"
+            })
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+# --- Existing Routes ---
 @app.get("/health")
 def health_check():
     return {"status": "online", "project": "Convoy Risk Analyzer"}
@@ -54,8 +89,6 @@ def get_bulk_risks(points):
     conn.close()
     return risks
 
-
-
 def get_osrm_route(origin, destination):
     url = (
         f"http://router.project-osrm.org/route/v1/driving/"
@@ -69,9 +102,7 @@ def get_osrm_route(origin, destination):
     for route in data.get("routes", []):
         coords = route["geometry"]["coordinates"]
         path = [[c[1], c[0]] for c in coords]
-
         risks = get_bulk_risks(path)
-
         segments = []
         for i in range(len(path) - 1):
             segments.append({
@@ -79,7 +110,6 @@ def get_osrm_route(origin, destination):
                 "end": path[i + 1],
                 "risk": risks[i]
             })
-
         routes.append({
             "path": path,
             "segments": segments,
@@ -89,20 +119,26 @@ def get_osrm_route(origin, destination):
     return routes
 
 @app.post("/route/plan")
-def plan_route(request: RouteRequest):
+async def plan_route(request: RouteRequest):
     osrm_routes = get_osrm_route(request.origin, request.destination)
-
     results = []
     for i, route in enumerate(osrm_routes):
         base_safety = 0.85 - (i * 0.15)
-        results.append({
+        result = {
             "path": route["path"],
             "segments": route["segments"],
             "safety_probability": round(base_safety, 4),
             "safety_percentage": f"{round(base_safety * 100, 2)}%",
             "distance_km": round(route["distance_m"] / 1000, 1),
             "duration_hrs": round(route["duration_s"] / 3600, 1),
+        }
+        results.append(result)
+        # Broadcast to all WebSocket clients in real-time
+        await manager.broadcast({
+            "type": "route_computed",
+            "route_id": i,
+            "safety": result["safety_percentage"],
+            "distance_km": result["distance_km"]
         })
 
     return {"routes": results, "total_found": len(results)}
-
