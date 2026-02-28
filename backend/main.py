@@ -18,7 +18,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- WebSocket Connection Manager ---
+SPEED_MAP = {
+    "motorcycle": 60, "truck": 40,
+    "APC": 30, "tank": 20, "artillery": 25
+}
+
+VEHICLE_FALLBACK = {
+    "motorcycle": {"max_road_width": 2.0, "max_bridge_load": 1.0,  "max_weight": 0.3},
+    "truck":      {"max_road_width": 3.5, "max_bridge_load": 20.0, "max_weight": 15.0},
+    "APC":        {"max_road_width": 4.0, "max_bridge_load": 30.0, "max_weight": 25.0},
+    "tank":       {"max_road_width": 5.0, "max_bridge_load": 60.0, "max_weight": 55.0},
+    "artillery":  {"max_road_width": 4.5, "max_bridge_load": 40.0, "max_weight": 35.0},
+}
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -51,7 +63,6 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-# --- Existing Routes ---
 @app.get("/health")
 def health_check():
     return {"status": "online", "project": "Convoy Risk Analyzer"}
@@ -64,6 +75,24 @@ def default_check():
 def db_test():
     response = supabase.table("users").select("*").execute()
     return {"connected": True, "data": response.data}
+
+async def get_vehicle_constraints(vehicle_type: str):
+    try:
+        response = supabase.table("vehicles") \
+            .select("*") \
+            .eq("type", vehicle_type) \
+            .limit(1) \
+            .execute()
+        if response.data:
+            v = response.data[0]
+            return {
+                "max_road_width": v["min_road_width_metres"],
+                "max_bridge_load": v["max_bridge_load_tonnes"],
+                "max_weight": v["max_weight_tonnes"],
+            }
+    except Exception as e:
+        print(f"Vehicle fetch failed: {e}")
+    return VEHICLE_FALLBACK.get(vehicle_type, VEHICLE_FALLBACK["truck"])
 
 def get_bulk_risks(points):
     if not points:
@@ -97,7 +126,6 @@ def get_osrm_route(origin, destination):
     )
     response = http_requests.get(url, timeout=10)
     data = response.json()
-
     routes = []
     for route in data.get("routes", []):
         coords = route["geometry"]["coordinates"]
@@ -121,24 +149,47 @@ def get_osrm_route(origin, destination):
 @app.post("/route/plan")
 async def plan_route(request: RouteRequest):
     osrm_routes = get_osrm_route(request.origin, request.destination)
+    vehicle = request.vehicle_type or "truck"
+    constraints = await get_vehicle_constraints(vehicle)
+    speed = SPEED_MAP.get(vehicle, 40)
+
     results = []
     for i, route in enumerate(osrm_routes):
         base_safety = 0.85 - (i * 0.15)
+        adjusted_duration = route["duration_s"] * (40 / speed)
         result = {
             "path": route["path"],
             "segments": route["segments"],
             "safety_probability": round(base_safety, 4),
             "safety_percentage": f"{round(base_safety * 100, 2)}%",
             "distance_km": round(route["distance_m"] / 1000, 1),
-            "duration_hrs": round(route["duration_s"] / 3600, 1),
+            "duration_hrs": round(adjusted_duration / 3600, 1),
+            "vehicle_type": vehicle,
+            "constraints": constraints,
         }
         results.append(result)
-        # Broadcast to all WebSocket clients in real-time
         await manager.broadcast({
             "type": "route_computed",
             "route_id": i,
             "safety": result["safety_percentage"],
-            "distance_km": result["distance_km"]
+            "distance_km": result["distance_km"],
+            "vehicle_type": vehicle,
         })
+
+    # 💾 Save to audit_logs
+    try:
+        supabase.table("audit_logs").insert({
+            "action_type": "route_planned",
+            "metadata": {
+                "origin": request.origin,
+                "destination": request.destination,
+                "vehicle_type": vehicle,
+                "best_safety": results[0]["safety_percentage"],
+                "distance_km": results[0]["distance_km"],
+                "total_routes": len(results),
+            }
+        }).execute()
+    except Exception as e:
+        print(f"Audit log failed: {e}")
 
     return {"routes": results, "total_found": len(results)}
