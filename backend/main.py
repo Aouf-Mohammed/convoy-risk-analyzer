@@ -1,10 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from db.database import supabase
 from models.route_models import RouteRequest
-from services.route_engine import build_graph, find_k_safest_routes, calculate_route_safety
+from middleware.auth_guard import get_current_user, require_role
 import requests as http_requests
-import sqlite3
 import random
 from typing import List
 
@@ -31,6 +30,7 @@ VEHICLE_FALLBACK = {
     "artillery":  {"max_road_width": 4.5, "max_bridge_load": 40.0, "max_weight": 35.0},
 }
 
+# ── WebSocket ──────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -63,6 +63,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
+# ── Health ─────────────────────────────────────────────────
 @app.get("/health")
 def health_check():
     return {"status": "online", "project": "Convoy Risk Analyzer"}
@@ -76,13 +77,30 @@ def db_test():
     response = supabase.table("users").select("*").execute()
     return {"connected": True, "data": response.data}
 
+# ── Auth ───────────────────────────────────────────────────
+@app.post("/auth/verify-code")
+async def verify_code(payload: dict):
+    code = payload.get("code", "").strip()
+    try:
+        result = supabase.table("users").select("*").eq("batch_number", code).single().execute()
+        if result.data:
+            user = result.data
+            return {
+                "valid": True,
+                "role": user["role"],
+                "unit_name": user["unit_name"],
+                "name": user["name"],
+                "clearance_level": user["clearance_level"],
+                "user_id": user["id"],
+            }
+    except Exception as e:
+        print(f"Auth error: {e}")
+    return {"valid": False}
+
+# ── Vehicles ───────────────────────────────────────────────
 async def get_vehicle_constraints(vehicle_type: str):
     try:
-        response = supabase.table("vehicles") \
-            .select("*") \
-            .eq("type", vehicle_type) \
-            .limit(1) \
-            .execute()
+        response = supabase.table("vehicles").select("*").eq("type", vehicle_type).limit(1).execute()
         if response.data:
             v = response.data[0]
             return {
@@ -94,30 +112,27 @@ async def get_vehicle_constraints(vehicle_type: str):
         print(f"Vehicle fetch failed: {e}")
     return VEHICLE_FALLBACK.get(vehicle_type, VEHICLE_FALLBACK["truck"])
 
+# ── Risk from Supabase (replaces SQLite) ───────────────────
 def get_bulk_risks(points):
     if not points:
         return []
-    conn = sqlite3.connect("convoy_risk.db")
-    cursor = conn.cursor()
     risks = []
     last_risk = 0.3
     for i in range(len(points) - 1):
         if i % 10 == 0:
-            lat = points[i][0]
-            lon = points[i][1]
-            cursor.execute("""
-                SELECT composite_risk_score FROM road_arcs
-                WHERE start_lat BETWEEN ? AND ?
-                AND start_lon BETWEEN ? AND ?
-                LIMIT 1
-            """, (lat - 0.05, lat + 0.05, lon - 0.05, lon + 0.05))
-            row = cursor.fetchone()
-            base = row[0] if row else 0.4
-            last_risk = round(min(1.0, max(0.01, base + random.uniform(-0.25, 0.25))), 4)
+            try:
+                lat, lon = points[i][0], points[i][1]
+                result = supabase.table("arc_risk_scores") \
+                    .select("composite_risk_score") \
+                    .limit(1).execute()
+                base = result.data[0]["composite_risk_score"] if result.data else 0.4
+                last_risk = round(min(1.0, max(0.01, base + random.uniform(-0.25, 0.25))), 4)
+            except:
+                last_risk = 0.4
         risks.append(last_risk)
-    conn.close()
     return risks
 
+# ── OSRM ───────────────────────────────────────────────────
 def get_osrm_route(origin, destination):
     url = (
         f"http://router.project-osrm.org/route/v1/driving/"
@@ -131,13 +146,7 @@ def get_osrm_route(origin, destination):
         coords = route["geometry"]["coordinates"]
         path = [[c[1], c[0]] for c in coords]
         risks = get_bulk_risks(path)
-        segments = []
-        for i in range(len(path) - 1):
-            segments.append({
-                "start": path[i],
-                "end": path[i + 1],
-                "risk": risks[i]
-            })
+        segments = [{"start": path[i], "end": path[i+1], "risk": risks[i]} for i in range(len(path)-1)]
         routes.append({
             "path": path,
             "segments": segments,
@@ -146,8 +155,9 @@ def get_osrm_route(origin, destination):
         })
     return routes
 
+# ── Route Planning (CMD only) ──────────────────────────────
 @app.post("/route/plan")
-async def plan_route(request: RouteRequest):
+async def plan_route(request: RouteRequest, user=Depends(require_role("commander"))):
     osrm_routes = get_osrm_route(request.origin, request.destination)
     vehicle = request.vehicle_type or "truck"
     constraints = await get_vehicle_constraints(vehicle)
@@ -176,9 +186,10 @@ async def plan_route(request: RouteRequest):
             "vehicle_type": vehicle,
         })
 
-    # 💾 Save to audit_logs
+    # Save to audit_logs with user_id
     try:
         supabase.table("audit_logs").insert({
+            "user_id": user["id"],
             "action_type": "route_planned",
             "metadata": {
                 "origin": request.origin,
@@ -194,24 +205,22 @@ async def plan_route(request: RouteRequest):
 
     return {"routes": results, "total_found": len(results)}
 
+# ── Convoys ────────────────────────────────────────────────
+@app.get("/convoys")
+async def get_convoys(user=Depends(get_current_user)):
+    result = supabase.table("convoys").select("*").execute()
+    return result.data
 
+@app.post("/convoys")
+async def create_convoy(payload: dict, user=Depends(require_role("commander"))):
+    result = supabase.table("convoys").insert({
+        **payload,
+        "commander_id": user["id"],
+        "status": "planned"
+    }).execute()
+    return result.data
 
-@app.post("/auth/verify-code")
-async def verify_code(payload: dict):
-    code = payload.get("code", "").strip()
-    try:
-        response = supabase.table("access_codes") \
-            .select("*") \
-            .eq("code", code) \
-            .limit(1) \
-            .execute()
-        if response.data:
-            user = response.data[0]
-            return {
-                "valid": True,
-                "role": user["role"],
-                "unit_name": user["unit_name"],
-            }
-    except Exception as e:
-        print(f"Auth error: {e}")
-    return {"valid": False}
+@app.patch("/convoys/{convoy_id}/status")
+async def update_convoy_status(convoy_id: str, payload: dict, user=Depends(require_role("commander"))):
+    result = supabase.table("convoys").update({"status": payload["status"]}).eq("id", convoy_id).execute()
+    return result.data
