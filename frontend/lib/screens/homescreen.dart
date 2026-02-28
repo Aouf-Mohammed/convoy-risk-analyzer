@@ -6,7 +6,10 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'dart:convert';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final String role;
+  final String unitName;
+
+  const HomeScreen({super.key, required this.role, required this.unitName});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -26,7 +29,6 @@ class _HomeScreenState extends State<HomeScreen> {
   late WebSocketChannel _channel;
   final List<Color> _routeColors = [Colors.green, Colors.orange, Colors.red];
 
-  // Convoy composition — vehicle type → count
   final Map<String, int> _convoyComposition = {
     'motorcycle': 0,
     'truck': 1,
@@ -35,7 +37,6 @@ class _HomeScreenState extends State<HomeScreen> {
     'artillery': 0,
   };
 
-  // Risk weight per vehicle type (heavier = higher risk on route)
   final Map<String, double> _vehicleRiskWeight = {
     'motorcycle': 0.1,
     'truck': 0.3,
@@ -54,7 +55,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     });
     if (count == 0) return 1.0;
-    // Normalize: avg weight * log scale of convoy size
     double avgWeight = total / count;
     double sizeFactor = 1.0 + (count / 20).clamp(0.0, 0.5);
     return (avgWeight * sizeFactor).clamp(0.5, 2.0);
@@ -126,7 +126,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
-      // Dominant vehicle type by count
       final dominantVehicle = _convoyComposition.entries
           .reduce((a, b) => a.value >= b.value ? a : b)
           .key;
@@ -145,7 +144,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final routes = response.data['routes'] as List;
 
-      // Apply convoy risk multiplier to safety scores
       for (var route in routes) {
         final original = (route['safety_probability'] as num).toDouble();
         final adjusted = (original / _convoyRiskMultiplier).clamp(0.0, 1.0);
@@ -254,6 +252,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildVehicleRow(String type, String label) {
     final count = _convoyComposition[type] ?? 0;
+    // Only commanders can modify composition
+    final canEdit = widget.role == 'commander';
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -266,7 +266,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: const Icon(Icons.remove_circle_outline, size: 20),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
-                onPressed: count > 0
+                onPressed: canEdit && count > 0
                     ? () => setState(() => _convoyComposition[type] = count - 1)
                     : null,
               ),
@@ -285,8 +285,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 icon: const Icon(Icons.add_circle_outline, size: 20),
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(),
-                onPressed: () =>
-                    setState(() => _convoyComposition[type] = count + 1),
+                onPressed: canEdit
+                    ? () => setState(() => _convoyComposition[type] = count + 1)
+                    : null,
               ),
             ],
           ),
@@ -295,10 +296,30 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Color get _roleColor => widget.role == 'commander'
+      ? Colors.indigo
+      : widget.role == 'analyst'
+      ? Colors.teal
+      : Colors.grey;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Convoy Risk Analyzer")),
+      appBar: AppBar(
+        title: const Text("Convoy Risk Analyzer"),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16, top: 8, bottom: 8),
+            child: Chip(
+              label: Text(
+                '${widget.role.toUpperCase()}  ·  ${widget.unitName}',
+                style: const TextStyle(fontSize: 11, color: Colors.white),
+              ),
+              backgroundColor: _roleColor,
+            ),
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           FlutterMap(
@@ -359,6 +380,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     TextField(
                       controller: _startController,
+                      // Drivers cannot type — read only
+                      readOnly: widget.role == 'driver',
                       decoration: const InputDecoration(
                         labelText: 'Start Point',
                         hintText: 'e.g. 28.6139, 77.2090',
@@ -372,6 +395,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: _endController,
+                      readOnly: widget.role == 'driver',
                       decoration: const InputDecoration(
                         labelText: 'End Point',
                         hintText: 'e.g. 19.0760, 72.8777',
@@ -381,7 +405,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Convoy Composition
+                    // Convoy composition — visible to all, editable only by commander
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
@@ -423,30 +447,60 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
 
                     const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _loading ? null : _analyzeRoute,
-                        icon: _loading
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(Icons.route),
-                        label: Text(
-                          _loading ? 'Analyzing...' : 'Analyze Route',
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          backgroundColor: Colors.indigo,
-                          foregroundColor: Colors.white,
+
+                    // Drivers cannot analyze — they only view
+                    if (widget.role != 'driver')
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: _loading ? null : _analyzeRoute,
+                          icon: _loading
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : const Icon(Icons.route),
+                          label: Text(
+                            _loading ? 'Analyzing...' : 'Analyze Route',
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            backgroundColor: Colors.indigo,
+                            foregroundColor: Colors.white,
+                          ),
                         ),
                       ),
-                    ),
+
+                    if (widget.role == 'driver')
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade800,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(
+                              Icons.info_outline,
+                              size: 16,
+                              color: Colors.grey,
+                            ),
+                            SizedBox(width: 8),
+                            Text(
+                              'View-only access',
+                              style: TextStyle(
+                                color: Colors.grey,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
                     if (_error != null) ...[
                       const SizedBox(height: 12),
                       Text(_error!, style: const TextStyle(color: Colors.red)),

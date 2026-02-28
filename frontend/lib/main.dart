@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'screens/homescreen.dart';
+import 'screens/loginscreen.dart';
 
 void main() {
   runApp(ProviderScope(child: const ConvoyApp()));
@@ -21,7 +22,7 @@ class ConvoyApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
       ),
-      home: const HomeScreen(), // our first screen
+      home: const LoginScreen(), // our first screen
     );
   }
 }

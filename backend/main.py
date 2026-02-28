@@ -193,3 +193,25 @@ async def plan_route(request: RouteRequest):
         print(f"Audit log failed: {e}")
 
     return {"routes": results, "total_found": len(results)}
+
+
+
+@app.post("/auth/verify-code")
+async def verify_code(payload: dict):
+    code = payload.get("code", "").strip()
+    try:
+        response = supabase.table("access_codes") \
+            .select("*") \
+            .eq("code", code) \
+            .limit(1) \
+            .execute()
+        if response.data:
+            user = response.data[0]
+            return {
+                "valid": True,
+                "role": user["role"],
+                "unit_name": user["unit_name"],
+            }
+    except Exception as e:
+        print(f"Auth error: {e}")
+    return {"valid": False}
