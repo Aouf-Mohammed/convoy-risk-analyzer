@@ -21,10 +21,46 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = false;
   String? _error;
   List<dynamic> _routes = [];
-  String? _liveUpdate; // Shows real-time WebSocket message
+  String? _liveUpdate;
 
   late WebSocketChannel _channel;
   final List<Color> _routeColors = [Colors.green, Colors.orange, Colors.red];
+
+  // Convoy composition — vehicle type → count
+  final Map<String, int> _convoyComposition = {
+    'motorcycle': 0,
+    'truck': 1,
+    'APC': 0,
+    'tank': 0,
+    'artillery': 0,
+  };
+
+  // Risk weight per vehicle type (heavier = higher risk on route)
+  final Map<String, double> _vehicleRiskWeight = {
+    'motorcycle': 0.1,
+    'truck': 0.3,
+    'APC': 0.5,
+    'tank': 0.8,
+    'artillery': 0.9,
+  };
+
+  double get _convoyRiskMultiplier {
+    double total = 0;
+    int count = 0;
+    _convoyComposition.forEach((type, qty) {
+      if (qty > 0) {
+        total += (_vehicleRiskWeight[type] ?? 0.3) * qty;
+        count += qty;
+      }
+    });
+    if (count == 0) return 1.0;
+    // Normalize: avg weight * log scale of convoy size
+    double avgWeight = total / count;
+    double sizeFactor = 1.0 + (count / 20).clamp(0.0, 0.5);
+    return (avgWeight * sizeFactor).clamp(0.5, 2.0);
+  }
+
+  int get _totalVehicles => _convoyComposition.values.fold(0, (a, b) => a + b);
 
   @override
   void initState() {
@@ -45,9 +81,8 @@ class _HomeScreenState extends State<HomeScreen> {
           if (data['type'] == 'route_computed') {
             setState(() {
               _liveUpdate =
-                  '🛰 Route ${data['route_id'] + 1} computed — Safety: ${data['safety']} · ${data['distance_km']} km';
+                  'Route ${data['route_id'] + 1} computed — Safety: ${data['safety']} · ${data['distance_km']} km';
             });
-            // Clear banner after 3 seconds
             Future.delayed(const Duration(seconds: 3), () {
               if (mounted) setState(() => _liveUpdate = null);
             });
@@ -78,6 +113,11 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    if (_totalVehicles == 0) {
+      setState(() => _error = 'Add at least one vehicle to the convoy');
+      return;
+    }
+
     setState(() {
       _loading = true;
       _error = null;
@@ -86,20 +126,39 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
+      // Dominant vehicle type by count
+      final dominantVehicle = _convoyComposition.entries
+          .reduce((a, b) => a.value >= b.value ? a : b)
+          .key;
+
       final response = await _dio.post(
         'https://convoy-risk-analyzer-production.up.railway.app/route/plan',
         data: {
           "origin": [double.parse(startParts[0]), double.parse(startParts[1])],
           "destination": [double.parse(endParts[0]), double.parse(endParts[1])],
           "k": 3,
+          "vehicle_type": dominantVehicle,
+          "convoy_composition": _convoyComposition,
+          "risk_multiplier": _convoyRiskMultiplier,
         },
       );
+
       final routes = response.data['routes'] as List;
+
+      // Apply convoy risk multiplier to safety scores
+      for (var route in routes) {
+        final original = (route['safety_probability'] as num).toDouble();
+        final adjusted = (original / _convoyRiskMultiplier).clamp(0.0, 1.0);
+        route['safety_probability'] = adjusted;
+        route['safety_percentage'] = '${(adjusted * 100).toStringAsFixed(2)}%';
+      }
+
       routes.sort(
         (a, b) => (b['safety_probability'] as num).compareTo(
           a['safety_probability'] as num,
         ),
       );
+
       setState(() => _routes = routes);
 
       if (routes.isNotEmpty) {
@@ -193,6 +252,49 @@ class _HomeScreenState extends State<HomeScreen> {
     return markers;
   }
 
+  Widget _buildVehicleRow(String type, String label) {
+    final count = _convoyComposition[type] ?? 0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 13)),
+          Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.remove_circle_outline, size: 20),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: count > 0
+                    ? () => setState(() => _convoyComposition[type] = count - 1)
+                    : null,
+              ),
+              SizedBox(
+                width: 28,
+                child: Text(
+                  '$count',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: () =>
+                    setState(() => _convoyComposition[type] = count + 1),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -218,7 +320,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
 
-          // Live WebSocket update banner
           if (_liveUpdate != null)
             Positioned(
               top: 16,
@@ -242,7 +343,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-          // Input Panel
           Positioned(
             top: 16,
             left: 16,
@@ -279,7 +379,50 @@ class _HomeScreenState extends State<HomeScreen> {
                         border: OutlineInputBorder(),
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
+
+                    // Convoy Composition
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade700),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                'Convoy Composition',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              Text(
+                                '$_totalVehicles vehicles  |  Risk x${_convoyRiskMultiplier.toStringAsFixed(2)}',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: _convoyRiskMultiplier > 1.2
+                                      ? Colors.red
+                                      : Colors.green,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          _buildVehicleRow('motorcycle', 'Motorcycle'),
+                          _buildVehicleRow('truck', 'Truck'),
+                          _buildVehicleRow('APC', 'APC'),
+                          _buildVehicleRow('tank', 'Tank'),
+                          _buildVehicleRow('artillery', 'Artillery'),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
@@ -331,7 +474,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           subtitle: Text(
-                            '${entry.value['distance_km']} km  ·  ${entry.value['duration_hrs']} hrs',
+                            '${entry.value['distance_km']} km  ·  ${entry.value['duration_hrs']} hrs  ·  ${entry.value['vehicle_type'] ?? ''}',
                             style: TextStyle(
                               color: Colors.grey[400],
                               fontSize: 12,
