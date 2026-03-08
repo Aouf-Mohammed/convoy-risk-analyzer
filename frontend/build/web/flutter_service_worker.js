@@ -3,7 +3,11 @@ const MANIFEST = 'flutter-app-manifest';
 const TEMP = 'flutter-temp-cache';
 const CACHE_NAME = 'flutter-app-cache';
 
+<<<<<<< HEAD
 const RESOURCES = {"flutter_bootstrap.js": "efa6d3aa4dba7b5a4558d030bc62dab3",
+=======
+const RESOURCES = {"flutter_bootstrap.js": "3339bdab93dfb3e61293e8a8bb4cf72d",
+>>>>>>> parent of 5239091 (Phase 7: Convoy composition + vehicle risk multiplier)
 ".vercel/project.json": "ca1682da63efa25c58bcbecc7e8e96be",
 ".vercel/README.txt": "2b13c79d37d6ed82a3255b83b6815034",
 "version.json": "2b521e10dfa0f067561de489a19d6620",

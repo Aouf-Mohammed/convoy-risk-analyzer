@@ -1,0 +1,18 @@
+Analyzing frontend...                                           
+
+warning • Unused import: 'screens/homescreen.dart' • lib/main.dart:6:8 • unused_import
+  error • The argument type 'CardTheme' can't be assigned to the parameter type 'CardThemeData?'.  • lib/main.dart:38:20 • argument_type_not_assignable
+   info • The imported package 'hive' isn't a dependency of the importing package • lib/providers/tile_provider.dart:4:8 • depend_on_referenced_packages
+   info • The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart' • lib/providers/tile_provider.dart:8:8 • unnecessary_import
+warning • Unused import: 'dart:convert' • lib/screens/homescreen.dart:5:8 • unused_import
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/screens/homescreen.dart:97:34 • deprecated_member_use
+   info • 'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion • lib/screens/homescreen.dart:98:43 • deprecated_member_use
+   info • 'value' is deprecated and shouldn't be used. Use component accessors like .r or .g, or toARGB32 for an explicit conversion • lib/screens/homescreen.dart:98:65 • deprecated_member_use
+   info • 'activeColor' is deprecated and shouldn't be used. Use activeThumbColor instead. This feature was deprecated after v3.31.0-2.0.pre • lib/screens/homescreen.dart:258:13 • deprecated_member_use
+   info • 'activeColor' is deprecated and shouldn't be used. Use activeThumbColor instead. This feature was deprecated after v3.31.0-2.0.pre • lib/screens/homescreen.dart:265:13 • deprecated_member_use
+   info • 'activeColor' is deprecated and shouldn't be used. Use activeThumbColor instead. This feature was deprecated after v3.31.0-2.0.pre • lib/screens/homescreen.dart:272:13 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/screens/homescreen.dart:339:41 • deprecated_member_use
+   info • Unnecessary use of multiple underscores • lib/screens/homescreen.dart:346:28 • unnecessary_underscores
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/screens/homescreen.dart:359:47 • deprecated_member_use
+   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss • lib/widgets/overlays/ground_traffic.dart:32:24 • deprecated_member_use
+

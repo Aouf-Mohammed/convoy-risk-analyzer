@@ -38,6 +38,10 @@ _flutter.buildConfig = {"engineRevision":"78fc3012e45889657f72359b005af7beac47ba
 
 _flutter.loader.load({
   serviceWorkerSettings: {
+<<<<<<< HEAD
     serviceWorkerVersion: "2737168065"
+=======
+    serviceWorkerVersion: "4054214009"
+>>>>>>> parent of 5239091 (Phase 7: Convoy composition + vehicle risk multiplier)
   }
 });
